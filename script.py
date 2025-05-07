@@ -3,11 +3,8 @@ import os
 import glob
 import sys
 
-# === MODE: from command line argument ===
-MODE = sys.argv[1] if len(sys.argv) > 1 else "recognize"
-
-# === Auto Name Saving and Loading ===
 def load_names(file_path="names.txt"):
+    """Load student names from file"""
     name_dict = {}
     try:
         with open(file_path, "r") as f:
@@ -22,6 +19,7 @@ def load_names(file_path="names.txt"):
     return name_dict
 
 def save_name(user_id, name, file_path="names.txt"):
+    """Save student name to file"""
     existing_ids = set()
     try:
         with open(file_path, "r") as f:
@@ -37,38 +35,23 @@ def save_name(user_id, name, file_path="names.txt"):
             f.write(f"{user_id} {name}\n")
 
 def delete_user_data(user_id, folder="data"):
+    """Delete user data from folder"""
     files = glob.glob(f"{folder}/user.{user_id}.*.jpg")
     for f in files:
         os.remove(f)
     print(f"✅ Deleted {len(files)} images for user ID {user_id}")
 
-if MODE == "collect":
-    if len(sys.argv) >= 4:
-        # Get user_id and user_name from command line
-        user_id = int(sys.argv[2])
-        user_name = " ".join(sys.argv[3:])
-        save_name(user_id, user_name)
-    else:
-        # Fallback to manual input if not provided via command line
-        user_id = int(input("Enter numeric User ID: "))
-        user_name = input("Enter name for this user: ")
-        save_name(user_id, user_name)
-else:
-    user_id = None
-
-name_dict = load_names()
-MAX_IMAGES = 20
-
-
-if not os.path.exists("data"):
-    os.makedirs("data")
-
 def generate_dataset(img, id, img_id):
+    """Save face image to dataset"""
+    if not os.path.exists("data"):
+        os.makedirs("data")
+        
     filename = f"data/user.{id}.{img_id}.jpg"
     cv2.imwrite(filename, img)
     print(f"✅ Saved image: {filename}")
 
-def draw_boundary(img, classifier, scaleFactor, minNeighbors, color, text ,clf, name_dict):
+def draw_boundary(img, classifier, scaleFactor, minNeighbors, color, text, clf, name_dict):
+    """Draw boundary around detected faces and identify them"""
     gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     features = classifier.detectMultiScale(gray_img, scaleFactor, minNeighbors)
     coords = []
@@ -76,56 +59,176 @@ def draw_boundary(img, classifier, scaleFactor, minNeighbors, color, text ,clf, 
     for (x, y, w, h) in features:
         cv2.rectangle(img, (x, y), (x + w, y + h), color, 2)
         if clf is not None:
-            id, confidence = clf.predict(gray_img[y:y + h, x:x + w])
-            name = name_dict.get(id, "Unknown") if confidence < 80 else "Unknown"
-            cv2.putText(img, name, (x, y - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+            try:
+                id, confidence = clf.predict(gray_img[y:y + h, x:x + w])
+                name = name_dict.get(id, "Unknown") if confidence < 80 else "Unknown"
+                cv2.putText(img, f"{name} ({confidence:.1f})", (x, y - 4), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
+            except Exception as e:
+                cv2.putText(img, f"Error: {str(e)[:10]}", (x, y - 4), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
         coords = [x, y, w, h]
     return coords
 
 def recognize(img, clf, faceCascade, name_dict):
+    """Recognize faces in image"""
     color = {"blue": (255, 0, 0), "red": (0, 0, 255), "green": (0, 255, 0), "white": (255, 255, 255)}
-    coords = draw_boundary(img, faceCascade, 1.1, 10, color["white"], "Face", clf, name_dict)
+    coords = draw_boundary(img, faceCascade, 1.1, 5, color["white"], "Face", clf, name_dict)
     return img
 
-def detect(img, faceCascade, eyesCascade, MouthCascade, noseCascade, img_id, user_id):
+def detect(img, faceCascade, img_id, user_id, max_images=20):
+    """Detect faces for dataset creation"""
     color = {"blue": (255, 0, 0), "red": (0, 0, 255), "green": (0, 255, 0), "white": (255, 255, 255)}
-    coords = draw_boundary(img, faceCascade, 1.1, 10, color["blue"], "Face", clf=None, name_dict={})
-    if len(coords) == 4:
-        roi_img = img[coords[1]: coords[1]+coords[3], coords[0]: coords[0]+coords[2]]
+    gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    faces = faceCascade.detectMultiScale(gray_img, 1.1, 5)
+    
+    coords = []
+    for (x, y, w, h) in faces:
+        cv2.rectangle(img, (x, y), (x + w, y + h), color["blue"], 2)
+        roi_img = gray_img[y:y+h, x:x+w]
+        # Resize to a standard size for better training
+        roi_img = cv2.resize(roi_img, (200, 200))
         generate_dataset(roi_img, user_id, img_id)
-        cv2.putText(img, f"Img: {img_id+1}/{MAX_IMAGES}", (coords[0], coords[1] - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color["green"], 2)
-    return img
+        cv2.putText(img, f"Img: {img_id+1}/{max_images}", 
+                  (x, y - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color["green"], 2)
+        coords = [x, y, w, h]
+        break  # Just take the first face
+        
+    return img, len(coords) > 0
 
-faceCascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
-eyesCascade = cv2.CascadeClassifier('haarcascade_eye.xml')
-MouthCascade = cv2.CascadeClassifier('Mouth.xml')
-noseCascade = cv2.CascadeClassifier('nose.xml')
+if __name__ == "__main__":
+    # === MODE: from command line argument ===
+    if len(sys.argv) < 2:
+        print("Usage: python script.py [recognize|collect] [user_id] [user_name]")
+        sys.exit(1)
+        
+    MODE = sys.argv[1]
+    MAX_IMAGES = 20
 
-clf = cv2.face.LBPHFaceRecognizer_create()
-clf.read("classifier.yml")
-
-video_capture = cv2.VideoCapture(0)
-img_id = 0
-
-if not video_capture.isOpened():
-    print("Error: Could not open camera.")
-    exit()
-
-while True:
-    _, img = video_capture.read()
-
-    if MODE == "collect" and img_id < MAX_IMAGES:
-        img = detect(img, faceCascade, eyesCascade, MouthCascade, noseCascade, img_id, user_id)
-        img_id += 1
-    elif MODE == "recognize":
-        img = recognize(img, clf, faceCascade, name_dict)
+    # Handle collection mode
+    if MODE == "collect":
+        if len(sys.argv) >= 4:
+            # Get user_id and user_name from command line
+            try:
+                user_id = int(sys.argv[2])
+                user_name = " ".join(sys.argv[3:])
+                save_name(user_id, user_name)
+            except ValueError:
+                print("❌ Error: User ID must be a number")
+                sys.exit(1)
+        else:
+            # Fallback to manual input if not provided via command line
+            try:
+                user_id = int(input("Enter numeric User ID: "))
+                user_name = input("Enter name for this user: ")
+                save_name(user_id, user_name)
+            except ValueError:
+                print("❌ Error: User ID must be a number")
+                sys.exit(1)
     else:
-        cv2.putText(img, f"✅ Collected {MAX_IMAGES} images. Press 'q' to quit.", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+        user_id = None
 
-    cv2.imshow("Face Detection", img)
+    # Load names dictionary
+    name_dict = load_names()
 
-    if cv2.waitKey(10) & 0xFF == ord('q'):
-        break
+    # Initialize cascades - use cv2.data.haarcascades path and handle missing files
+    try:
+        faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        if faceCascade.empty():
+            print("❌ Error: Could not load face cascade classifier")
+            sys.exit(1)
+            
+        # These are optional, only used in specialized detection modes
+        # Check if the optional files exist before trying to load them
+        eyesCascade = None
+        MouthCascade = None
+        noseCascade = None
+        
+        if os.path.exists(cv2.data.haarcascades + 'haarcascade_eye.xml'):
+            eyesCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
+        
+        if os.path.exists('Mouth.xml'):
+            MouthCascade = cv2.CascadeClassifier('Mouth.xml')
+        
+        if os.path.exists('nose.xml'):
+            noseCascade = cv2.CascadeClassifier('nose.xml')
+            
+    except Exception as e:
+        print(f"❌ Error loading cascade files: {e}")
+        sys.exit(1)
 
-video_capture.release()
-cv2.destroyAllWindows()
+    # Load classifier if it exists
+    clf = None
+    if MODE == "recognize":
+        if os.path.exists("classifier.yml"):
+            try:
+                # Check if opencv-contrib-python is installed
+                if hasattr(cv2, 'face') and hasattr(cv2.face, 'LBPHFaceRecognizer_create'):
+                    clf = cv2.face.LBPHFaceRecognizer_create()
+                    clf.read("classifier.yml")
+                else:
+                    print("❌ Error: OpenCV face recognition module not available")
+                    print("Please install opencv-contrib-python: pip install opencv-contrib-python")
+                    sys.exit(1)
+            except Exception as e:
+                print(f"❌ Error loading classifier: {e}")
+                sys.exit(1)
+        else:
+            print("⚠️ Warning: classifier.yml not found. Recognition will not work properly.")
+
+    # Start video capture
+    video_capture = cv2.VideoCapture(0)
+    img_id = 0
+    face_detected = False
+
+    if not video_capture.isOpened():
+        print("❌ Error: Could not open camera.")
+        sys.exit(1)
+
+    print(f"🎥 Camera opened successfully. Mode: {MODE}")
+    if MODE == "collect":
+        print(f"👤 Collecting data for user ID: {user_id}, Name: {name_dict.get(user_id, 'Unknown')}")
+    
+    while True:
+        ret, img = video_capture.read()
+        if not ret:
+            print("❌ Error: Could not read frame")
+            break
+            
+        # Handle different modes
+        if MODE == "collect" and img_id < MAX_IMAGES:
+            img, face_detected = detect(img, faceCascade, img_id, user_id, MAX_IMAGES)
+            if face_detected:
+                img_id += 1
+                
+        elif MODE == "recognize":
+            if clf is not None:
+                img = recognize(img, clf, faceCascade, name_dict)
+            else:
+                cv2.putText(img, "No classifier found", (10, 30), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+            # If we've collected enough images or in an unknown mode
+            cv2.putText(img, f"✅ Collected {min(img_id, MAX_IMAGES)} images. Press 'q' to quit.", 
+                      (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+
+        # Show status in collect mode
+        if MODE == "collect" and img_id < MAX_IMAGES:
+            cv2.putText(img, f"Images: {img_id}/{MAX_IMAGES}", (10, 30), 
+                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            if not face_detected:
+                cv2.putText(img, "No face detected!", (10, 60), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+
+        cv2.imshow("Face Detection", img)
+
+        # Exit on 'q' press or when finished collecting
+        if cv2.waitKey(10) & 0xFF == ord('q') or (MODE == "collect" and img_id >= MAX_IMAGES):
+            break
+
+    video_capture.release()
+    cv2.destroyAllWindows()
+    
+    if MODE == "collect":
+        print(f"✅ Collection complete! {img_id} images saved.")
+        print("ℹ️ Please run the classifier training to update the model.")
