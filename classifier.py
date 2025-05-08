@@ -2,48 +2,8 @@ import numpy as np
 from PIL import Image
 import os
 import cv2
-import json
 
-def load_config():
-    """Load configuration from config.json"""
-    try:
-        with open("config.json", "r") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"⚠️ Could not load config.json: {e}")
-        # Return default config
-        return {
-            "face_detection": {
-                "scaleFactor": 1.3,
-                "minNeighbors": 5,
-                "minSize": [30, 30]
-            },
-            "paths": {
-                "data_dir": "data",
-                "attendance_dir": "attendance",
-                "names_file": "names.txt",
-                "classifier_file": "classifier.yml"
-            },
-            "collection": {
-                "max_images": 20,
-                "image_size": [200, 200]
-            },
-            "recognition": {
-                "confidence_threshold": 80
-            }
-        }
-
-def train_classifier(data_dir=None, classifier_file=None):
-    # Load configuration
-    config = load_config()
-    
-    # Use config values if parameters not provided
-    if data_dir is None:
-        data_dir = config["paths"]["data_dir"]
-    
-    if classifier_file is None:
-        classifier_file = config["paths"]["classifier_file"]
-    
+def train_classifier(data_dir):
     # Ensure data directory exists
     if not os.path.exists(data_dir):
         print(f"❌ Error: Data directory '{data_dir}' does not exist!")
@@ -94,14 +54,7 @@ def train_classifier(data_dir=None, classifier_file=None):
             user_id = int(id_part)
 
             # Detect faces in the image
-            # Use configuration parameters
-            detection_params = config["face_detection"]
-            detected_faces = detector.detectMultiScale(
-                image_np, 
-                scaleFactor=detection_params["scaleFactor"],
-                minNeighbors=detection_params["minNeighbors"],
-                minSize=tuple(detection_params["minSize"])
-            )
+            detected_faces = detector.detectMultiScale(image_np)
             
             if len(detected_faces) == 0:
                 print(f"⚠️ No face detected in {filename}")
@@ -120,12 +73,11 @@ def train_classifier(data_dir=None, classifier_file=None):
     if len(faces) > 0:
         print(f"🧠 Training classifier with {len(faces)} faces...")
         clf.train(faces, np.array(ids, dtype=np.int32))
-        clf.write(classifier_file)
-        print(f"✅ Training complete! {classifier_file} saved with {len(faces)} faces for {len(set(ids))} users.")
+        clf.write("classifier.yml")
+        print(f"✅ Training complete! classifier.yml saved with {len(faces)} faces for {len(set(ids))} users.")
     else:
         print("❌ No faces detected. Check your dataset.")
 
 # Run the training function
 if __name__ == "__main__":
-    config = load_config()
-    train_classifier(config["paths"]["data_dir"], config["paths"]["classifier_file"])
+    train_classifier("data")

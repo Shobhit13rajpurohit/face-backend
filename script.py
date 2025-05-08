@@ -2,39 +2,6 @@ import cv2
 import os
 import glob
 import sys
-import json
-import subprocess
-
-subprocess.call(['python', 'collect_training_data.py'])
-
-def load_config():
-    """Load configuration from config.json"""
-    try:
-        with open("config.json", "r") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"⚠️ Could not load config.json: {e}")
-        # Return default config
-        return {
-            "face_detection": {
-                "scaleFactor": 1.3,
-                "minNeighbors": 5,
-                "minSize": [30, 30]
-            },
-            "paths": {
-                "data_dir": "data",
-                "attendance_dir": "attendance",
-                "names_file": "names.txt",
-                "classifier_file": "classifier.yml"
-            },
-            "collection": {
-                "max_images": 20,
-                "image_size": [200, 200]
-            },
-            "recognition": {
-                "confidence_threshold": 80
-            }
-        }
 
 def load_names(file_path="names.txt"):
     """Load student names from file"""
@@ -45,15 +12,7 @@ def load_names(file_path="names.txt"):
                 parts = line.strip().split()
                 if len(parts) >= 2:
                     id = int(parts[0])
-                    
-                    # Extract name (everything before first [tag])
-                    name_parts = []
-                    for part in parts[1:]:
-                        if part.startswith("["):
-                            break
-                        name_parts.append(part)
-                    name = " ".join(name_parts)
-                    
+                    name = " ".join(parts[1:])
                     name_dict[id] = name
     except Exception as e:
         print("⚠️ Could not load names:", e)
@@ -82,31 +41,19 @@ def delete_user_data(user_id, folder="data"):
         os.remove(f)
     print(f"✅ Deleted {len(files)} images for user ID {user_id}")
 
-def generate_dataset(img, id, img_id, config):
+def generate_dataset(img, id, img_id):
     """Save face image to dataset"""
-    data_dir = config["paths"]["data_dir"]
-    if not os.path.exists(data_dir):
-        os.makedirs(data_dir)
+    if not os.path.exists("data"):
+        os.makedirs("data")
         
-    filename = f"{data_dir}/user.{id}.{img_id}.jpg"
+    filename = f"data/user.{id}.{img_id}.jpg"
     cv2.imwrite(filename, img)
     print(f"✅ Saved image: {filename}")
 
-def draw_boundary(img, classifier, color, text, clf, name_dict, config):
+def draw_boundary(img, classifier, scaleFactor, minNeighbors, color, text, clf, name_dict):
     """Draw boundary around detected faces and identify them"""
     gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Use parameters from config
-    detection_params = config["face_detection"]
-    confidence_threshold = config["recognition"]["confidence_threshold"]
-    
-    features = classifier.detectMultiScale(
-        gray_img, 
-        scaleFactor=detection_params["scaleFactor"],
-        minNeighbors=detection_params["minNeighbors"],
-        minSize=tuple(detection_params["minSize"])
-    )
-    
+    features = classifier.detectMultiScale(gray_img, scaleFactor, minNeighbors)
     coords = []
 
     for (x, y, w, h) in features:
@@ -114,7 +61,7 @@ def draw_boundary(img, classifier, color, text, clf, name_dict, config):
         if clf is not None:
             try:
                 id, confidence = clf.predict(gray_img[y:y + h, x:x + w])
-                name = name_dict.get(id, "Unknown") if confidence < confidence_threshold else "Unknown"
+                name = name_dict.get(id, "Unknown") if confidence < 80 else "Unknown"
                 cv2.putText(img, f"{name} ({confidence:.1f})", (x, y - 4), 
                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
             except Exception as e:
@@ -123,35 +70,25 @@ def draw_boundary(img, classifier, color, text, clf, name_dict, config):
         coords = [x, y, w, h]
     return coords
 
-def recognize(img, clf, faceCascade, name_dict, config):
+def recognize(img, clf, faceCascade, name_dict):
     """Recognize faces in image"""
     color = {"blue": (255, 0, 0), "red": (0, 0, 255), "green": (0, 255, 0), "white": (255, 255, 255)}
-    coords = draw_boundary(img, faceCascade, color["white"], "Face", clf, name_dict, config)
+    coords = draw_boundary(img, faceCascade, 1.1, 5, color["white"], "Face", clf, name_dict)
     return img
 
-def detect(img, faceCascade, img_id, user_id, config):
+def detect(img, faceCascade, img_id, user_id, max_images=20):
     """Detect faces for dataset creation"""
     color = {"blue": (255, 0, 0), "red": (0, 0, 255), "green": (0, 255, 0), "white": (255, 255, 255)}
     gray_img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    detection_params = config["face_detection"]
-    max_images = config["collection"]["max_images"]
-    image_size = tuple(config["collection"]["image_size"])
-    
-    faces = faceCascade.detectMultiScale(
-        gray_img, 
-        scaleFactor=detection_params["scaleFactor"],
-        minNeighbors=detection_params["minNeighbors"],
-        minSize=tuple(detection_params["minSize"])
-    )
+    faces = faceCascade.detectMultiScale(gray_img, 1.1, 5)
     
     coords = []
     for (x, y, w, h) in faces:
         cv2.rectangle(img, (x, y), (x + w, y + h), color["blue"], 2)
         roi_img = gray_img[y:y+h, x:x+w]
         # Resize to a standard size for better training
-        roi_img = cv2.resize(roi_img, image_size)
-        generate_dataset(roi_img, user_id, img_id, config)
+        roi_img = cv2.resize(roi_img, (200, 200))
+        generate_dataset(roi_img, user_id, img_id)
         cv2.putText(img, f"Img: {img_id+1}/{max_images}", 
                   (x, y - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color["green"], 2)
         coords = [x, y, w, h]
@@ -160,16 +97,13 @@ def detect(img, faceCascade, img_id, user_id, config):
     return img, len(coords) > 0
 
 if __name__ == "__main__":
-    # Load configuration
-    config = load_config()
-    
     # === MODE: from command line argument ===
     if len(sys.argv) < 2:
         print("Usage: python script.py [recognize|collect] [user_id] [user_name]")
         sys.exit(1)
         
     MODE = sys.argv[1]
-    MAX_IMAGES = config["collection"]["max_images"]
+    MAX_IMAGES = 20
 
     # Handle collection mode
     if MODE == "collect":
@@ -195,7 +129,7 @@ if __name__ == "__main__":
         user_id = None
 
     # Load names dictionary
-    name_dict = load_names(config["paths"]["names_file"])
+    name_dict = load_names()
 
     # Initialize cascades - use cv2.data.haarcascades path and handle missing files
     try:
@@ -226,13 +160,12 @@ if __name__ == "__main__":
     # Load classifier if it exists
     clf = None
     if MODE == "recognize":
-        classifier_file = config["paths"]["classifier_file"]
-        if os.path.exists(classifier_file):
+        if os.path.exists("classifier.yml"):
             try:
                 # Check if opencv-contrib-python is installed
                 if hasattr(cv2, 'face') and hasattr(cv2.face, 'LBPHFaceRecognizer_create'):
                     clf = cv2.face.LBPHFaceRecognizer_create()
-                    clf.read(classifier_file)
+                    clf.read("classifier.yml")
                 else:
                     print("❌ Error: OpenCV face recognition module not available")
                     print("Please install opencv-contrib-python: pip install opencv-contrib-python")
@@ -241,13 +174,7 @@ if __name__ == "__main__":
                 print(f"❌ Error loading classifier: {e}")
                 sys.exit(1)
         else:
-            print(f"⚠️ Warning: {classifier_file} not found. Recognition will not work properly.")
-
-    # Create attendance directory if it doesn't exist
-    attendance_dir = config["paths"]["attendance_dir"]
-    if not os.path.exists(attendance_dir):
-        os.makedirs(attendance_dir)
-        print(f"✅ Created attendance directory: {attendance_dir}")
+            print("⚠️ Warning: classifier.yml not found. Recognition will not work properly.")
 
     # Start video capture
     video_capture = cv2.VideoCapture(0)
@@ -270,13 +197,13 @@ if __name__ == "__main__":
             
         # Handle different modes
         if MODE == "collect" and img_id < MAX_IMAGES:
-            img, face_detected = detect(img, faceCascade, img_id, user_id, config)
+            img, face_detected = detect(img, faceCascade, img_id, user_id, MAX_IMAGES)
             if face_detected:
                 img_id += 1
                 
         elif MODE == "recognize":
             if clf is not None:
-                img = recognize(img, clf, faceCascade, name_dict, config)
+                img = recognize(img, clf, faceCascade, name_dict)
             else:
                 cv2.putText(img, "No classifier found", (10, 30), 
                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
