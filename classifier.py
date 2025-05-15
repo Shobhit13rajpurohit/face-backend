@@ -2,6 +2,7 @@ import numpy as np
 from PIL import Image
 import os
 import cv2
+import sys
 
 def train_classifier(data_dir):
     # Ensure data directory exists
@@ -25,6 +26,7 @@ def train_classifier(data_dir):
         print("Please install opencv-contrib-python: pip install opencv-contrib-python")
         return
 
+    # Load face detector
     detector = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
     if detector.empty():
         print("❌ Error: Could not load face cascade classifier!")
@@ -42,29 +44,30 @@ def train_classifier(data_dir):
             image_np = np.array(gray_image, "uint8")
 
             # Extract numeric ID from filename
+            # Format is user.{id}.{count}.jpg as per script.py and collect_training_data.py
             filename = os.path.basename(image_path)
-            # The format is user.{id}.{count}.jpg
-            id_part = filename.split(".")[1]
-
-            # Ensure ID is a number
-            if not id_part.isdigit():
-                print(f"⚠️ Skipping {filename}: ID must be a number")
+            parts = filename.split(".")
+            
+            if len(parts) < 3 or not parts[0] == "user" or not parts[1].isdigit():
+                print(f"⚠️ Skipping {filename}: Invalid filename format. Expected: user.{id}.{count}.jpg")
                 continue
 
-            user_id = int(id_part)
+            user_id = int(parts[1])
 
             # Detect faces in the image
-            detected_faces = detector.detectMultiScale(image_np)
+            detected_faces = detector.detectMultiScale(image_np, scaleFactor=1.1, minNeighbors=5)
             
             if len(detected_faces) == 0:
                 print(f"⚠️ No face detected in {filename}")
                 continue
                 
             for (x, y, w, h) in detected_faces:
-                faces.append(image_np[y:y+h, x:x+w])
+                # Resize to standard size for better recognition
+                face = cv2.resize(image_np[y:y+h, x:x+w], (200, 200))
+                faces.append(face)
                 ids.append(user_id)
                 print(f"✅ Processed {filename} for user ID {user_id}")
-                break  # Use only the first face detected
+                break  # Use only the first face detected as in script.py
 
         except Exception as e:
             print(f"❌ Error processing {image_path}: {e}")
@@ -80,4 +83,9 @@ def train_classifier(data_dir):
 
 # Run the training function
 if __name__ == "__main__":
-    train_classifier("data")
+    # Accept command line argument for data directory
+    data_dir = "data"
+    if len(sys.argv) > 1:
+        data_dir = sys.argv[1]
+    
+    train_classifier(data_dir)

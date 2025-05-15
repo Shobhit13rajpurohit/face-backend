@@ -54,15 +54,17 @@ class StudentManager:
         table_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
         # Create treeview for data
-        self.tree = ttk.Treeview(table_frame, columns=("ID", "Name", "Roll Number", "Status"), show="headings")
+        self.tree = ttk.Treeview(table_frame, columns=("ID", "Name", "Roll Number", "Email", "Status"), show="headings")
         self.tree.heading("ID", text="Student ID")
         self.tree.heading("Name", text="Name")
         self.tree.heading("Roll Number", text="Roll Number")
+        self.tree.heading("Email", text="Email")
         self.tree.heading("Status", text="Status")
         
         self.tree.column("ID", width=60)
-        self.tree.column("Name", width=200)
+        self.tree.column("Name", width=180)
         self.tree.column("Roll Number", width=120)
+        self.tree.column("Email", width=150)
         self.tree.column("Status", width=120)
         
         # Add scrollbar
@@ -93,7 +95,11 @@ class StudentManager:
             students = []
             with open(self.names_file, "r") as f:
                 for line in f:
-                    parts = line.strip().split()
+                    line = line.strip()
+                    if not line:  # Skip empty lines
+                        continue
+                        
+                    parts = line.split()
                     if len(parts) >= 2:
                         student_id = parts[0]
                         
@@ -101,18 +107,24 @@ class StudentManager:
                         roll_match = re.search(r'\[roll:(.*?)\]', line)
                         roll_number = roll_match.group(1) if roll_match else ""
                         
-                        # Extract name (everything before [roll: if it exists)
-                        if '[roll:' in line:
-                            name_part = line.split('[roll:')[0].strip()
-                            name = ' '.join(name_part.split()[1:])  # Skip ID
-                        else:
-                            name = ' '.join(parts[1:])
+                        # Extract email if exists
+                        email_match = re.search(r'\[email:(.*?)\]', line)
+                        email = email_match.group(1) if email_match else ""
+                        
+                        # Extract name (everything before tags)
+                        name_part = line
+                        if '[roll:' in name_part:
+                            name_part = name_part.split('[roll:')[0]
+                        if '[email:' in name_part:
+                            name_part = name_part.split('[email:')[0]
+                            
+                        name = ' '.join(name_part.split()[1:]).strip()  # Skip ID
                             
                         # Check if face images exist
                         face_images = glob.glob(f"{self.data_dir}/user.{student_id}.*.jpg")
                         status = f"{len(face_images)} images" if face_images else "No face data"
                         
-                        students.append((student_id, name, roll_number, status))
+                        students.append((student_id, name, roll_number, email, status))
             
             # Insert data into treeview
             for student in students:
@@ -127,7 +139,7 @@ class StudentManager:
         """Open dialog to add a new student"""
         add_window = tk.Toplevel(self.root)
         add_window.title("Add New Student")
-        add_window.geometry("400x250")
+        add_window.geometry("400x300")
         add_window.config(bg="#f0f0f0")
         add_window.grab_set()  # Make window modal
         
@@ -166,6 +178,15 @@ class StudentManager:
         roll_entry = ttk.Entry(roll_frame, textvariable=roll_var, width=20)
         roll_entry.grid(row=0, column=1, sticky=tk.W)
         
+        # Email field
+        email_frame = ttk.Frame(form_frame)
+        email_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(email_frame, text="Email:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        email_var = tk.StringVar()
+        email_entry = ttk.Entry(email_frame, textvariable=email_var, width=30)
+        email_entry.grid(row=0, column=1, sticky=tk.W)
+        
         # Buttons
         btn_frame = ttk.Frame(form_frame)
         btn_frame.pack(fill=tk.X, pady=20)
@@ -174,42 +195,48 @@ class StudentManager:
             student_id = id_var.get().strip()
             name = name_var.get().strip()
             roll = roll_var.get().strip()
+            email = email_var.get().strip()
             
             if not student_id:
                 messagebox.showerror("Error", "Student ID is required")
-                return
+                return False
                 
             if not name:
                 messagebox.showerror("Error", "Student Name is required")
-                return
+                return False
                 
             # Check if ID already exists
             if os.path.exists(self.names_file):
                 with open(self.names_file, "r") as f:
                     for line in f:
-                        if line.startswith(student_id + " "):
+                        if line.strip().startswith(student_id + " "):
                             messagebox.showerror("Error", f"Student ID {student_id} already exists")
-                            return
+                            return False
             
+            # Validate email format if provided
+            if email and not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+                messagebox.showerror("Error", "Invalid email format")
+                return False
+                
             # Save student data
             with open(self.names_file, "a+") as f:
-                f.write(f"{student_id} {name} [roll:{roll}] [email:]\n")
+                f.write(f"{student_id} {name} [roll:{roll}] [email:{email}]\n")
                 
             messagebox.showinfo("Success", "Student added successfully")
             add_window.destroy()
             self.load_students()
+            return True
             
-            # Ask if user wants to collect face data now
-            if messagebox.askyesno("Collect Face Data", 
-                                   "Do you want to collect face data for this student now?"):
-                self.collect_face_data(student_id, name)
+        def save_and_collect():
+            if save_student():
+                self.collect_face_data(id_var.get().strip(), name_var.get().strip())
                 
         def cancel():
             add_window.destroy()
             
         ttk.Button(btn_frame, text="Save", command=save_student).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Save & Collect Face Data", 
-                  command=lambda: [save_student(), self.collect_face_data(id_var.get(), name_var.get())]).pack(side=tk.LEFT, padx=5)
+                  command=save_and_collect).pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Cancel", command=cancel).pack(side=tk.RIGHT, padx=5)
         
         # Focus on first field
@@ -227,11 +254,12 @@ class StudentManager:
         student_id = student_data[0]
         student_name = student_data[1]
         student_roll = student_data[2]
+        student_email = student_data[3] if len(student_data) > 3 else ""
         
         # Create edit window
         edit_window = tk.Toplevel(self.root)
         edit_window.title(f"Edit Student: {student_name}")
-        edit_window.geometry("400x250")
+        edit_window.geometry("400x300")
         edit_window.config(bg="#f0f0f0")
         edit_window.grab_set()  # Make window modal
         
@@ -266,6 +294,15 @@ class StudentManager:
         roll_entry = ttk.Entry(roll_frame, textvariable=roll_var, width=20)
         roll_entry.grid(row=0, column=1, sticky=tk.W)
         
+        # Email field
+        email_frame = ttk.Frame(form_frame)
+        email_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(email_frame, text="Email:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        email_var = tk.StringVar(value=student_email)
+        email_entry = ttk.Entry(email_frame, textvariable=email_var, width=30)
+        email_entry.grid(row=0, column=1, sticky=tk.W)
+        
         # Buttons
         btn_frame = ttk.Frame(form_frame)
         btn_frame.pack(fill=tk.X, pady=20)
@@ -273,19 +310,25 @@ class StudentManager:
         def save_changes():
             name = name_var.get().strip()
             roll = roll_var.get().strip()
+            email = email_var.get().strip()
             
             if not name:
                 messagebox.showerror("Error", "Student Name is required")
-                return
+                return False
+                
+            # Validate email format if provided
+            if email and not re.match(r"[^@]+@[^@]+\.[^@]+", email):
+                messagebox.showerror("Error", "Invalid email format")
+                return False
                 
             # Update student data in names.txt
             if os.path.exists(self.names_file):
                 lines = []
                 with open(self.names_file, "r") as f:
                     for line in f:
-                        if line.startswith(student_id + " "):
+                        if line.strip().startswith(student_id + " "):
                             # Replace line with updated info
-                            lines.append(f"{student_id} {name} [roll:{roll}] [email:]\n")
+                            lines.append(f"{student_id} {name} [roll:{roll}] [email:{email}]\n")
                         else:
                             lines.append(line)
                             
@@ -295,10 +338,11 @@ class StudentManager:
             messagebox.showinfo("Success", "Student information updated")
             edit_window.destroy()
             self.load_students()
+            return True
             
         def collect_faces():
-            save_changes()
-            self.collect_face_data(student_id, name_var.get())
+            if save_changes():
+                self.collect_face_data(student_id, name_var.get().strip())
             
         def cancel():
             edit_window.destroy()
@@ -329,7 +373,7 @@ class StudentManager:
             lines = []
             with open(self.names_file, "r") as f:
                 for line in f:
-                    if not line.startswith(student_id + " "):
+                    if not line.strip().startswith(student_id + " "):
                         lines.append(line)
                         
             with open(self.names_file, "w") as f:
@@ -349,13 +393,23 @@ class StudentManager:
         
     def collect_face_data(self, student_id, name):
         """Launch face data collection for a student"""
+        script_path = "collect_training_data.py"
+        
+        if not os.path.exists(script_path):
+            messagebox.showerror("Error", 
+                               f"Face collection script '{script_path}' not found.")
+            return
+            
         try:
-            subprocess.run([sys.executable, "collect_training_data.py", student_id, name])
+            subprocess.run([sys.executable, script_path, student_id, name])
+            
             # Retrain the model if we have enough data
             if os.path.exists("classifier.py"):
                 if messagebox.askyesno("Train Model", 
                                       "Do you want to train the recognition model with the new data?"):
                     subprocess.run([sys.executable, "classifier.py"])
+            
+            # Refresh the student list
             self.load_students()
         except Exception as e:
             messagebox.showerror("Error", f"Error collecting face data: {e}")

@@ -14,6 +14,12 @@ def load_names(file_path="names.txt"):
                     id = int(parts[0])
                     name = " ".join(parts[1:])
                     name_dict[id] = name
+    except FileNotFoundError:
+        print("⚠️ Names file not found. Creating a new one.")
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(file_path) if os.path.dirname(file_path) else '.', exist_ok=True)
+        # Create an empty file
+        open(file_path, 'a').close()
     except Exception as e:
         print("⚠️ Could not load names:", e)
     return name_dict
@@ -31,12 +37,15 @@ def save_name(user_id, name, file_path="names.txt"):
         pass
 
     if user_id not in existing_ids:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(file_path) if os.path.dirname(file_path) else '.', exist_ok=True)
         with open(file_path, "a") as f:
             f.write(f"{user_id} {name}\n")
+        print(f"✅ Added user: {user_id} - {name}")
 
 def delete_user_data(user_id, folder="data"):
     """Delete user data from folder"""
-    files = glob.glob(f"{folder}/user.{user_id}.*.jpg")
+    files = glob.glob(os.path.join(folder, f"user.{user_id}.*.jpg"))
     for f in files:
         os.remove(f)
     print(f"✅ Deleted {len(files)} images for user ID {user_id}")
@@ -46,7 +55,7 @@ def generate_dataset(img, id, img_id):
     if not os.path.exists("data"):
         os.makedirs("data")
         
-    filename = f"data/user.{id}.{img_id}.jpg"
+    filename = os.path.join("data", f"user.{id}.{img_id}.jpg")
     cv2.imwrite(filename, img)
     print(f"✅ Saved image: {filename}")
 
@@ -61,7 +70,9 @@ def draw_boundary(img, classifier, scaleFactor, minNeighbors, color, text, clf, 
         if clf is not None:
             try:
                 id, confidence = clf.predict(gray_img[y:y + h, x:x + w])
-                name = name_dict.get(id, "Unknown") if confidence < 80 else "Unknown"
+                # LBPH confidence works opposite - lower means better match
+                # Typical threshold is around 70-80
+                name = name_dict.get(id, "Unknown") if confidence < 70 else "Unknown"
                 cv2.putText(img, f"{name} ({confidence:.1f})", (x, y - 4), 
                           cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 1, cv2.LINE_AA)
             except Exception as e:
@@ -99,11 +110,12 @@ def detect(img, faceCascade, img_id, user_id, max_images=20):
 if __name__ == "__main__":
     # === MODE: from command line argument ===
     if len(sys.argv) < 2:
-        print("Usage: python script.py [recognize|collect] [user_id] [user_name]")
+        print("Usage: python script.py [recognize|collect|delete] [user_id] [user_name]")
         sys.exit(1)
         
-    MODE = sys.argv[1]
+    MODE = sys.argv[1].lower()  # Normalize mode input
     MAX_IMAGES = 20
+    user_id = None
 
     # Handle collection mode
     if MODE == "collect":
@@ -125,34 +137,36 @@ if __name__ == "__main__":
             except ValueError:
                 print("❌ Error: User ID must be a number")
                 sys.exit(1)
-    else:
-        user_id = None
+    # Handle delete mode
+    elif MODE == "delete":
+        if len(sys.argv) >= 3:
+            try:
+                user_id = int(sys.argv[2])
+                delete_user_data(user_id)
+                print(f"✅ Deleted data for user ID: {user_id}")
+                sys.exit(0)
+            except ValueError:
+                print("❌ Error: User ID must be a number")
+                sys.exit(1)
+        else:
+            print("❌ Error: User ID required for delete mode")
+            print("Usage: python script.py delete [user_id]")
+            sys.exit(1)
+    elif MODE != "recognize":
+        print(f"❌ Error: Unknown mode '{MODE}'")
+        print("Usage: python script.py [recognize|collect|delete] [user_id] [user_name]")
+        sys.exit(1)
 
     # Load names dictionary
     name_dict = load_names()
 
     # Initialize cascades - use cv2.data.haarcascades path and handle missing files
     try:
-        faceCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+        cascade_path = os.path.join(cv2.data.haarcascades, 'haarcascade_frontalface_default.xml')
+        faceCascade = cv2.CascadeClassifier(cascade_path)
         if faceCascade.empty():
-            print("❌ Error: Could not load face cascade classifier")
+            print(f"❌ Error: Could not load face cascade classifier from {cascade_path}")
             sys.exit(1)
-            
-        # These are optional, only used in specialized detection modes
-        # Check if the optional files exist before trying to load them
-        eyesCascade = None
-        MouthCascade = None
-        noseCascade = None
-        
-        if os.path.exists(cv2.data.haarcascades + 'haarcascade_eye.xml'):
-            eyesCascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-        
-        if os.path.exists('Mouth.xml'):
-            MouthCascade = cv2.CascadeClassifier('Mouth.xml')
-        
-        if os.path.exists('nose.xml'):
-            noseCascade = cv2.CascadeClassifier('nose.xml')
-            
     except Exception as e:
         print(f"❌ Error loading cascade files: {e}")
         sys.exit(1)
@@ -175,6 +189,7 @@ if __name__ == "__main__":
                 sys.exit(1)
         else:
             print("⚠️ Warning: classifier.yml not found. Recognition will not work properly.")
+            print("Run the classifier training script first to enable recognition.")
 
     # Start video capture
     video_capture = cv2.VideoCapture(0)
@@ -189,46 +204,55 @@ if __name__ == "__main__":
     if MODE == "collect":
         print(f"👤 Collecting data for user ID: {user_id}, Name: {name_dict.get(user_id, 'Unknown')}")
     
-    while True:
-        ret, img = video_capture.read()
-        if not ret:
-            print("❌ Error: Could not read frame")
-            break
-            
-        # Handle different modes
-        if MODE == "collect" and img_id < MAX_IMAGES:
-            img, face_detected = detect(img, faceCascade, img_id, user_id, MAX_IMAGES)
-            if face_detected:
-                img_id += 1
+    # Main loop
+    try:
+        while True:
+            ret, img = video_capture.read()
+            if not ret:
+                print("❌ Error: Could not read frame. Camera disconnected?")
+                break
                 
-        elif MODE == "recognize":
-            if clf is not None:
-                img = recognize(img, clf, faceCascade, name_dict)
+            # Handle different modes
+            if MODE == "collect" and img_id < MAX_IMAGES:
+                img, face_detected = detect(img, faceCascade, img_id, user_id, MAX_IMAGES)
+                if face_detected:
+                    img_id += 1
+                    
+            elif MODE == "recognize":
+                if clf is not None:
+                    img = recognize(img, clf, faceCascade, name_dict)
+                else:
+                    cv2.putText(img, "No classifier found", (10, 30), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             else:
-                cv2.putText(img, "No classifier found", (10, 30), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-        else:
-            # If we've collected enough images or in an unknown mode
-            cv2.putText(img, f"✅ Collected {min(img_id, MAX_IMAGES)} images. Press 'q' to quit.", 
-                      (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                # If we've collected enough images or in an unknown mode
+                if img_id >= MAX_IMAGES:
+                    cv2.putText(img, f"✅ Collected {img_id} images. Press 'q' to quit.", 
+                              (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # Show status in collect mode
-        if MODE == "collect" and img_id < MAX_IMAGES:
-            cv2.putText(img, f"Images: {img_id}/{MAX_IMAGES}", (10, 30), 
-                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            if not face_detected:
-                cv2.putText(img, "No face detected!", (10, 60), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            # Show status in collect mode
+            if MODE == "collect":
+                cv2.putText(img, f"Images: {img_id}/{MAX_IMAGES}", (10, 30), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                if not face_detected:
+                    cv2.putText(img, "No face detected!", (10, 60), 
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
-        cv2.imshow("Face Detection", img)
+            cv2.imshow("Face Recognition", img)
 
-        # Exit on 'q' press or when finished collecting
-        if cv2.waitKey(10) & 0xFF == ord('q') or (MODE == "collect" and img_id >= MAX_IMAGES):
-            break
-
-    video_capture.release()
-    cv2.destroyAllWindows()
-    
-    if MODE == "collect":
-        print(f"✅ Collection complete! {img_id} images saved.")
-        print("ℹ️ Please run the classifier training to update the model.")
+            # Exit on 'q' press or when finished collecting
+            key = cv2.waitKey(10) & 0xFF
+            if key == ord('q') or (MODE == "collect" and img_id >= MAX_IMAGES):
+                break
+    except KeyboardInterrupt:
+        print("\n✅ Program terminated by user")
+    except Exception as e:
+        print(f"❌ Error during processing: {e}")
+    finally:
+        # Clean up resources
+        video_capture.release()
+        cv2.destroyAllWindows()
+        
+        if MODE == "collect":
+            print(f"✅ Collection complete! {img_id} images saved.")
+            print("ℹ️ Please run the classifier training to update the model.")
